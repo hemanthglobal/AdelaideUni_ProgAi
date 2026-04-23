@@ -8,17 +8,9 @@ from typing import Generator
 
 
 def _to_2d(X: ArrayLike, name: str = "X") -> np.ndarray:
-    """Convert input to a 2-D float64 array.
-
-    Parameters
-    ----------
-    X    : array-like
-    name : str — variable name used in error messages
-
-    Returns
-    -------
-    X : ndarray, shape (n, p), dtype float64
-    """
+    # Converts any input into a 2D float64 array.
+    # 1D inputs are treated as a single row.
+    # Raises a clear error if the shape is completely wrong.
     X = np.asarray(X, dtype=np.float64)
     if X.ndim == 1:
         X = X.reshape(1, -1)
@@ -33,41 +25,29 @@ def euclidean_distance(
     *,
     squared: bool = False,
 ) -> np.ndarray:
-    """Compute pairwise Euclidean distances between rows of A and B.
-
-    Uses the identity  ||a - b||^2 = ||a||^2 + ||b||^2 - 2*a.b
-    implemented as a matrix multiply to avoid an explicit outer loop.
-    Floating-point noise (tiny negatives) is clipped to 0 before sqrt.
-
-    Parameters
-    ----------
-    A       : array-like (n, p)
-    B       : array-like (m, p) or None — if None, pairwise within A
-    squared : bool, default False — return squared distances (skip sqrt)
-
-    Returns
-    -------
-    D : ndarray (n, m) — D[i, j] = ||A[i] - B[j]||
-
-    Raises
-    ------
-    ValueError : if A and B have different number of columns
-
-    Time  : O(n * m * p)
-    Space : O(n * m)
-    """
+    # Computes straight-line distances between every row of A and every row of B.
+    # If B is not given, computes pairwise distances within A itself.
+    #
+    # Instead of looping over every pair of rows, uses the algebraic identity:
+    #   ||a - b||^2 = ||a||^2 + ||b||^2 - 2*(a dot b)
+    # The dot product part becomes a matrix multiply (A @ B.T) which NumPy
+    # runs much faster than any Python loop.
+    #
+    # Floating point arithmetic can produce tiny negatives like -1e-15 before
+    # the sqrt, so we clip anything below 0 to exactly 0 to avoid NaN.
+    # Use squared=True to skip the sqrt entirely.
     A = _to_2d(A, "A")
     B = A if B is None else _to_2d(B, "B")
 
     if A.shape[1] != B.shape[1]:
         raise ValueError(f"A has {A.shape[1]} columns; B has {B.shape[1]}. Must match.")
 
-    AA = np.einsum("ij,ij->i", A, A)
-    BB = np.einsum("ij,ij->i", B, B)
-    AB = A @ B.T
+    AA = np.einsum("ij,ij->i", A, A)   # squared row norms of A
+    BB = np.einsum("ij,ij->i", B, B)   # squared row norms of B
+    AB = A @ B.T                        # cross term via matrix multiply
 
     D2 = AA[:, np.newaxis] + BB[np.newaxis, :] - 2.0 * AB
-    np.clip(D2, 0.0, None, out=D2)
+    np.clip(D2, 0.0, None, out=D2)     # remove floating point noise before sqrt
 
     return D2 if squared else np.sqrt(D2)
 
@@ -76,28 +56,14 @@ def cosine_distance(
     A: ArrayLike,
     B: ArrayLike | None = None,
 ) -> np.ndarray:
-    """Compute pairwise cosine distances (1 - cosine similarity).
-
-    Rows are L2-normalised before the dot product.
-    Zero-norm rows are assigned distance 1 (undefined similarity).
-    Result is clipped to [0, 2] to handle floating-point edge cases.
-
-    Parameters
-    ----------
-    A : array-like (n, p)
-    B : array-like (m, p) or None — if None, pairwise within A
-
-    Returns
-    -------
-    D : ndarray (n, m) — values in [0, 2]; 0 = identical direction
-
-    Raises
-    ------
-    ValueError : if A and B have different number of columns
-
-    Time  : O(n * m * p)
-    Space : O(n * m)
-    """
+    # Measures the angle between vectors rather than straight-line distance.
+    # Doesn't care about the length of vectors, only the direction they point.
+    # Result is always between 0 and 2:
+    #   0 = same direction, 1 = perpendicular, 2 = completely opposite
+    #
+    # Each row is normalised to length 1 first, then we do a dot product.
+    # Zero-norm rows (all zeros) have no direction — we set their norm to 1
+    # so the output is 1 (neutral) instead of crashing with division by zero.
     A = _to_2d(A, "A")
     B = A if B is None else _to_2d(B, "B")
 
@@ -107,13 +73,14 @@ def cosine_distance(
     norm_A = np.linalg.norm(A, axis=1, keepdims=True)
     norm_B = np.linalg.norm(B, axis=1, keepdims=True)
 
+    # Replace zero norms with 1 to avoid division by zero
     norm_A[norm_A == 0] = 1.0
     norm_B[norm_B == 0] = 1.0
 
     sim = (A / norm_A) @ (B / norm_B).T
-    np.clip(sim, -1.0, 1.0, out=sim)
+    np.clip(sim, -1.0, 1.0, out=sim)   # clamp for floating point safety
 
-    return 1.0 - sim
+    return 1.0 - sim                    # convert similarity to distance
 
 
 def logsumexp(
@@ -121,25 +88,15 @@ def logsumexp(
     axis: int | None = None,
     keepdims: bool = False,
 ) -> np.ndarray:
-    """Compute log(sum(exp(X))) in a numerically stable way.
-
-    Stability trick — subtract the per-slice maximum before exponentiating,
-    then add it back:  LSE(x) = max(x) + log(sum(exp(x - max(x))))
-    This prevents overflow for large values (e.g. x = 1000).
-
-    Parameters
-    ----------
-    X        : array-like, any shape
-    axis     : int or None — reduction axis; None reduces entire array
-    keepdims : bool, default False
-
-    Returns
-    -------
-    out : ndarray — same shape as X with axis removed (or kept if keepdims)
-
-    Time  : O(X.size)
-    Space : O(X.size)
-    """
+    # Computes log(sum(exp(x))) without overflowing.
+    #
+    # The problem: exp(1000) is infinity on a computer.
+    # The fix (max-shift trick):
+    #   1. Find the max value in x
+    #   2. Subtract it from everything before exp()
+    #   3. Add it back after log()
+    # The maths works out exactly the same but it never overflows.
+    # This is used internally by softmax and log_softmax.
     X = np.asarray(X, dtype=np.float64)
     x_max = np.max(X, axis=axis, keepdims=True)
     x_max_safe = np.where(np.isneginf(x_max), 0.0, x_max)
@@ -154,23 +111,12 @@ def softmax(
     X: ArrayLike,
     axis: int = -1,
 ) -> np.ndarray:
-    """Numerically stable softmax along the given axis.
-
-    Uses max-shift:  softmax(x) = exp(x - max(x)) / sum(exp(x - max(x)))
-    Output values are in (0, 1) and sum to 1 along the given axis.
-
-    Parameters
-    ----------
-    X    : array-like, any shape
-    axis : int, default -1
-
-    Returns
-    -------
-    out : ndarray — same shape as X, sums to 1 along axis
-
-    Time  : O(X.size)
-    Space : O(X.size)
-    """
+    # Converts raw scores into probabilities that sum to 1.
+    # Used in classification — the final layer of a neural network uses this
+    # to turn scores into "probability of each class".
+    #
+    # Uses the same max-shift trick as logsumexp to prevent overflow.
+    # Every row of the output sums to exactly 1.0.
     X = np.asarray(X, dtype=np.float64)
     x_max = np.max(X, axis=axis, keepdims=True)
     e_x = np.exp(X - x_max)
@@ -181,47 +127,24 @@ def log_softmax(
     X: ArrayLike,
     axis: int = -1,
 ) -> np.ndarray:
-    """Numerically stable log-softmax along the given axis.
-
-    Computed as  X - logsumexp(X)  rather than  log(softmax(X))
-    to preserve precision for very small probabilities.
-
-    Parameters
-    ----------
-    X    : array-like, any shape
-    axis : int, default -1
-
-    Returns
-    -------
-    out : ndarray — same shape as X, log-probabilities
-
-    Time  : O(X.size)
-    Space : O(X.size)
-    """
+    # Log of the softmax probabilities.
+    # Computed as x - logsumexp(x) rather than log(softmax(x)).
+    # Both give the same answer mathematically but this way keeps more
+    # precision when probabilities are very small — log(tiny number) loses
+    # accuracy quickly, this approach avoids that problem entirely.
     X = np.asarray(X, dtype=np.float64)
     return X - logsumexp(X, axis=axis, keepdims=True)
 
 
 def sigmoid(X: ArrayLike) -> np.ndarray:
-    """Element-wise sigmoid (logistic) function.
-
-    Uses a two-branch stable implementation to avoid overflow:
-        x >= 0 :  1 / (1 + exp(-x))
-        x <  0 :  exp(x) / (1 + exp(x))
-    Both branches are mathematically identical but each avoids
-    overflow in the other's domain.
-
-    Parameters
-    ----------
-    X : array-like, any shape
-
-    Returns
-    -------
-    out : ndarray — same shape as X, values in (0, 1)
-
-    Time  : O(X.size)
-    Space : O(X.size)
-    """
+    # Squishes any number into the range (0, 1).
+    # Used in binary classification to output a probability.
+    # Formula: 1 / (1 + exp(-x))
+    #
+    # Stability issue: for very negative x, exp(-x) overflows to infinity.
+    # Fix — use two branches that are mathematically identical:
+    #   x >= 0 : 1 / (1 + exp(-x))       safe for positive x
+    #   x <  0 : exp(x) / (1 + exp(x))   safe for negative x
     X = np.asarray(X, dtype=np.float64)
     out = np.empty_like(X)
     pos = X >= 0
@@ -233,19 +156,9 @@ def sigmoid(X: ArrayLike) -> np.ndarray:
 
 
 def relu(X: ArrayLike) -> np.ndarray:
-    """Element-wise Rectified Linear Unit:  relu(x) = max(0, x).
-
-    Parameters
-    ----------
-    X : array-like, any shape
-
-    Returns
-    -------
-    out : ndarray — same shape as X, values >= 0
-
-    Time  : O(X.size)
-    Space : O(X.size)
-    """
+    # Rectified Linear Unit — the simplest activation function.
+    # Anything negative becomes 0, positive values stay unchanged.
+    # Widely used between layers in neural networks.
     return np.maximum(0.0, np.asarray(X, dtype=np.float64))
 
 
@@ -257,31 +170,16 @@ def batch_iterator(
     shuffle: bool = False,
     random_state: int | np.random.Generator | None = None,
 ) -> Generator[tuple[np.ndarray, ...], None, None]:
-    """Yield mini-batches of (X,) or (X, y) without copying the data.
-
-    The last batch may be smaller than batch_size if the data does not
-    divide evenly. Uses index slicing so no data is copied for contiguous arrays.
-
-    Parameters
-    ----------
-    X            : array-like (n_samples, ...)
-    y            : array-like (n_samples, ...) or None
-    batch_size   : int, default 32
-    shuffle      : bool, default False — shuffle indices before batching
-    random_state : int, Generator, or None — seed for reproducible shuffles
-
-    Yields
-    ------
-    (X_batch,)          when y is None
-    (X_batch, y_batch)  when y is provided
-
-    Raises
-    ------
-    ValueError : if batch_size < 1 or X and y have different n_samples
-
-    Time  : O(n_samples) per full pass
-    Space : O(1) beyond the yielded slices
-    """
+    # Splits the dataset into small chunks (mini-batches) and yields them one
+    # at a time. Training on the full dataset at once can exhaust memory —
+    # batching solves that by feeding data in manageable pieces.
+    #
+    # This is a generator so it never loads all data into memory at once.
+    # It slices using index arrays so no data is copied for contiguous arrays.
+    # The last batch may be smaller if data doesn't divide evenly — that's fine.
+    #
+    # shuffle=True randomises the order before splitting into batches.
+    # random_state lets you set a seed so results are reproducible.
     if batch_size < 1:
         raise ValueError(f"batch_size must be >= 1, got {batch_size}.")
 
