@@ -7,22 +7,8 @@ from numpy.typing import ArrayLike
 
 
 def _validate_array(X: ArrayLike, name: str = "X") -> np.ndarray:
-    """Convert input to a 2-D float64 ndarray and validate shape.
-
-    Parameters
-    ----------
-    X    : array-like of shape (n_samples, n_features)
-    name : str — variable name used in error messages
-
-    Returns
-    -------
-    X : np.ndarray, shape (n_samples, n_features), dtype float64
-
-    Raises
-    ------
-    TypeError  : if X cannot be converted to a numeric array
-    ValueError : if X is not 1-D or 2-D
-    """
+    # Converts any input (list, tuple, etc.) into a 2D NumPy float array.
+    # Raises a clear error if the input can't be converted or has wrong shape.
     try:
         X = np.asarray(X, dtype=np.float64)
     except (TypeError, ValueError) as exc:
@@ -37,13 +23,8 @@ def _validate_array(X: ArrayLike, name: str = "X") -> np.ndarray:
 
 
 def _check_is_fitted(transformer, attr: str = "mean_") -> None:
-    """Raise RuntimeError if transformer has not been fitted yet.
-
-    Parameters
-    ----------
-    transformer : object
-    attr        : str — attribute set during fit()
-    """
+    # Makes sure fit() was called before transform().
+    # If not, raises a helpful error instead of a confusing crash.
     if not hasattr(transformer, attr):
         raise RuntimeError(
             f"{type(transformer).__name__} is not fitted. Call fit() first."
@@ -51,25 +32,11 @@ def _check_is_fitted(transformer, attr: str = "mean_") -> None:
 
 
 class StandardScaler:
-    """Standardise features to zero mean and unit variance.
-
-    Formula per feature j:  z = (x - mean_j) / std_j
-
-    Constant columns (std == 0) are set to 0 instead of dividing by zero.
-    NaN values in training data are ignored via np.nanmean / np.nanstd.
-
-    Parameters
-    ----------
-    with_mean : bool, default True  — subtract column mean
-    with_std  : bool, default True  — divide by column std
-    ddof      : int,  default 0     — degrees of freedom for std
-
-    Attributes
-    ----------
-    mean_           : ndarray (n_features,) — per-feature mean
-    scale_          : ndarray (n_features,) — per-feature std
-    n_features_in_  : int — number of features seen during fit
-    """
+    # Rescales each column to have mean=0 and std=1.
+    # Formula: z = (x - mean) / std
+    # Useful when columns have very different scales (e.g. age vs salary).
+    # Constant columns (std=0) are handled safely — output is set to 0.
+    # NaN values in training data are ignored using np.nanmean / np.nanstd.
 
     def __init__(self, *, with_mean: bool = True, with_std: bool = True, ddof: int = 0):
         self.with_mean = with_mean
@@ -77,46 +44,19 @@ class StandardScaler:
         self.ddof = ddof
 
     def fit(self, X: ArrayLike, y=None) -> "StandardScaler":
-        """Compute per-feature mean and std from training data.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        self
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_features)
-        """
+        # Calculates the mean and std of each column and stores them.
+        # Nothing is changed in X yet — this just learns the statistics.
         X = _validate_array(X)
         self.n_features_in_ = X.shape[1]
         self.mean_ = np.nanmean(X, axis=0) if self.with_mean else np.zeros(X.shape[1])
         self.scale_ = np.nanstd(X, axis=0, ddof=self.ddof) if self.with_std else np.ones(X.shape[1])
+        # If std is 0 (constant column), replace with 1 to avoid division by zero
         self.scale_[self.scale_ == 0.0] = 1.0
         return self
 
     def transform(self, X: ArrayLike) -> np.ndarray:
-        """Apply standardisation using fitted mean and std.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features), float64
-
-        Raises
-        ------
-        RuntimeError : if not fitted
-        ValueError   : if feature count does not match fit
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_samples * n_features)
-        """
+        # Applies z = (x - mean) / std using the statistics from fit().
+        # Raises an error if fit() hasn't been called or column count changed.
         _check_is_fitted(self)
         X = _validate_array(X)
         if X.shape[1] != self.n_features_in_:
@@ -124,30 +64,12 @@ class StandardScaler:
         return (X - self.mean_) / self.scale_
 
     def fit_transform(self, X: ArrayLike, y=None) -> np.ndarray:
-        """Fit and transform in one step.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features)
-        """
+        # Shortcut that runs fit() then transform() in one call.
         return self.fit(X).transform(X)
 
     def inverse_transform(self, Xt: ArrayLike) -> np.ndarray:
-        """Reverse the standardisation: X = Xt * std + mean.
-
-        Parameters
-        ----------
-        Xt : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        X : ndarray (n_samples, n_features)
-        """
+        # Reverses the scaling: recovers original values from scaled ones.
+        # Formula: x = z * std + mean
         _check_is_fitted(self)
         Xt = _validate_array(Xt)
         return Xt * self.scale_ + self.mean_
@@ -157,25 +79,10 @@ class StandardScaler:
 
 
 class MinMaxScaler:
-    """Scale features to a fixed range [lo, hi] (default [0, 1]).
-
-    Formula per feature j:  z = (x - min_j) / (max_j - min_j) * (hi - lo) + lo
-
-    Constant columns (max == min) are mapped to lo without dividing by zero.
-
-    Parameters
-    ----------
-    feature_range : tuple (lo, hi), default (0, 1)
-
-    Attributes
-    ----------
-    data_min_      : ndarray (n_features,) — per-feature minimum
-    data_max_      : ndarray (n_features,) — per-feature maximum
-    data_range_    : ndarray (n_features,) — max - min per feature
-    scale_         : ndarray (n_features,) — scaling factor
-    min_           : ndarray (n_features,) — offset term
-    n_features_in_ : int
-    """
+    # Scales each column to fit within a target range, default [0, 1].
+    # Formula: z = (x - min) / (max - min) * (hi - lo) + lo
+    # Useful when a model expects inputs within a fixed range.
+    # Constant columns (max == min) are mapped safely to the lower bound.
 
     def __init__(self, feature_range: tuple[float, float] = (0, 1)):
         lo, hi = feature_range
@@ -184,20 +91,8 @@ class MinMaxScaler:
         self.feature_range = feature_range
 
     def fit(self, X: ArrayLike, y=None) -> "MinMaxScaler":
-        """Compute per-feature min and max from training data.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        self
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_features)
-        """
+        # Finds the min and max of each column from training data.
+        # Also pre-computes the scale and offset to make transform() fast.
         X = _validate_array(X)
         self.n_features_in_ = X.shape[1]
         self.data_min_ = np.nanmin(X, axis=0)
@@ -205,31 +100,17 @@ class MinMaxScaler:
         self.data_range_ = self.data_max_ - self.data_min_
 
         lo, hi = self.feature_range
+        # For constant columns use 1 temporarily to avoid division by zero
         safe_range = np.where(self.data_range_ == 0, 1.0, self.data_range_)
         full_scale = (hi - lo) / safe_range
+        # Constant columns get scale=0 so they always output lo
         self.scale_ = np.where(self.data_range_ == 0, 0.0, full_scale)
         self.min_ = np.where(self.data_range_ == 0, lo, lo - self.data_min_ * full_scale)
         return self
 
     def transform(self, X: ArrayLike) -> np.ndarray:
-        """Apply min-max scaling.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features)
-
-        Raises
-        ------
-        RuntimeError : if not fitted
-        ValueError   : if feature count does not match fit
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_samples * n_features)
-        """
+        # Applies the min-max formula using values learned in fit().
+        # Raises an error if fit() hasn't been called or column count changed.
         _check_is_fitted(self, "data_min_")
         X = _validate_array(X)
         if X.shape[1] != self.n_features_in_:
@@ -237,30 +118,11 @@ class MinMaxScaler:
         return X * self.scale_ + self.min_
 
     def fit_transform(self, X: ArrayLike, y=None) -> np.ndarray:
-        """Fit and transform in one step.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features)
-        """
+        # Shortcut that runs fit() then transform() in one call.
         return self.fit(X).transform(X)
 
     def inverse_transform(self, Xt: ArrayLike) -> np.ndarray:
-        """Reverse the min-max scaling.
-
-        Parameters
-        ----------
-        Xt : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        X : ndarray (n_samples, n_features)
-        """
+        # Reverses the scaling to recover the original values.
         _check_is_fitted(self, "data_min_")
         Xt = _validate_array(Xt)
         safe_scale = np.where(self.scale_ == 0, 1.0, self.scale_)
@@ -271,25 +133,15 @@ class MinMaxScaler:
 
 
 class Imputer:
-    """Replace NaN values with a per-column statistic.
-
-    Strategies
-    ----------
-    'mean'          : replace NaN with column mean (default)
-    'median'        : replace NaN with column median
-    'most_frequent' : replace NaN with most common value in column
-    'constant'      : replace NaN with a fixed fill_value
-
-    Parameters
-    ----------
-    strategy   : str,   default 'mean'
-    fill_value : float, default None  — required when strategy='constant'
-    axis       : int,   default 0     — 0 = per column, 1 = per row
-
-    Attributes
-    ----------
-    statistics_ : ndarray (n_features,) — fill value per feature learned during fit
-    """
+    # Fills in missing values (NaN) in a dataset using a chosen strategy.
+    # Real datasets almost always have missing values — most ML models
+    # crash or give wrong results when they encounter NaN, so this fixes that.
+    #
+    # Strategies:
+    #   'mean'          — fill with column average (default)
+    #   'median'        — fill with column middle value (better with outliers)
+    #   'most_frequent' — fill with the most common value in the column
+    #   'constant'      — fill with a fixed number you provide
 
     _VALID_STRATEGIES = {"mean", "median", "most_frequent", "constant"}
 
@@ -303,20 +155,8 @@ class Imputer:
         self.axis = axis
 
     def fit(self, X: ArrayLike, y=None) -> "Imputer":
-        """Compute the fill statistic for each feature.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        self
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_features)
-        """
+        # Computes the fill value for each column based on the chosen strategy.
+        # Stores results in self.statistics_ — one value per column.
         X = _validate_array(X)
         self._n_features = X.shape[1]
         ax = self.axis
@@ -326,6 +166,7 @@ class Imputer:
         elif self.strategy == "median":
             self.statistics_ = np.nanmedian(X, axis=ax)
         elif self.strategy == "most_frequent":
+            # Find the most common non-NaN value in each column
             def _mode_col(col: np.ndarray) -> float:
                 finite = col[~np.isnan(col)]
                 if finite.size == 0:
@@ -340,24 +181,8 @@ class Imputer:
         return self
 
     def transform(self, X: ArrayLike) -> np.ndarray:
-        """Fill NaN entries using learned statistics.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features) with no NaN values
-
-        Raises
-        ------
-        RuntimeError : if not fitted
-        ValueError   : if feature count does not match fit
-
-        Time  : O(n_samples * n_features)
-        Space : O(n_samples * n_features)
-        """
+        # Replaces all NaN values using the statistics learned in fit().
+        # Uses boolean masking and NumPy indexing — no loop over rows.
         _check_is_fitted(self, "statistics_")
         X = _validate_array(X).copy()
 
@@ -375,17 +200,7 @@ class Imputer:
         return X
 
     def fit_transform(self, X: ArrayLike, y=None) -> np.ndarray:
-        """Fit and transform in one step.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, n_features)
-        """
+        # Shortcut that runs fit() then transform() in one call.
         return self.fit(X).transform(X)
 
     def __repr__(self) -> str:
@@ -393,24 +208,19 @@ class Imputer:
 
 
 class OneHotEncoder:
-    """Encode categorical columns as a one-hot binary matrix.
-
-    Each unique category in column j becomes a separate binary output column.
-    Output columns are the horizontal concatenation of one-hot blocks per input column.
-
-    Parameters
-    ----------
-    sparse         : bool, default False       — reserved for future sparse support
-    handle_unknown : str,  default 'error'     — 'error' raises on unseen categories;
-                                                 'ignore' emits an all-zero row
-    dtype          : numpy dtype, default float64
-
-    Attributes
-    ----------
-    categories_         : list of ndarray — sorted unique categories per column
-    n_features_in_      : int
-    feature_names_out_  : list[str] — e.g. ['x0_cat', 'x0_dog', 'x1_red']
-    """
+    # Converts categorical text/label columns into binary (0/1) columns.
+    # ML models only understand numbers, not strings like "cat" or "red".
+    # Each unique category becomes its own column with a 1 where it appears.
+    #
+    # Example: colour column ["red","blue","red"] becomes:
+    #   x0_blue  x0_red
+    #     0        1
+    #     1        0
+    #     0        1
+    #
+    # handle_unknown controls what happens when transform() sees a new category:
+    #   'error'  — raises a ValueError (default, safe choice)
+    #   'ignore' — outputs an all-zero row for that sample
 
     def __init__(self, *, sparse: bool = False, handle_unknown: str = "error", dtype=np.float64):
         if handle_unknown not in ("error", "ignore"):
@@ -420,20 +230,8 @@ class OneHotEncoder:
         self.dtype = dtype
 
     def fit(self, X: ArrayLike, y=None) -> "OneHotEncoder":
-        """Learn unique categories per column.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features) — categorical data
-        y : ignored
-
-        Returns
-        -------
-        self
-
-        Time  : O(n_samples * n_features * log n_samples)
-        Space : O(sum of unique categories across all columns)
-        """
+        # Scans each column and stores its sorted unique categories.
+        # Also builds human-readable output column names like 'x0_cat', 'x1_red'.
         X = np.asarray(X)
         if X.ndim == 1:
             X = X.reshape(-1, 1)
@@ -451,24 +249,9 @@ class OneHotEncoder:
         return self
 
     def transform(self, X: ArrayLike) -> np.ndarray:
-        """Encode X as a one-hot binary array.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, total_categories), dtype float64
-
-        Raises
-        ------
-        RuntimeError : if not fitted
-        ValueError   : feature mismatch or unknown category with handle_unknown='error'
-
-        Time  : O(n_samples * n_features * log n_categories)
-        Space : O(n_samples * total_categories)
-        """
+        # Builds the one-hot binary matrix.
+        # Uses np.searchsorted (binary search) to find each category's position
+        # in the sorted list — fast and avoids looping over samples.
         _check_is_fitted(self, "categories_")
         X = np.asarray(X)
         if X.ndim == 1:
@@ -484,6 +267,7 @@ class OneHotEncoder:
             n_cats = len(cats)
             block = np.zeros((n_samples, n_cats), dtype=self.dtype)
 
+            # Binary search to find where each value sits in the sorted category list
             idx = np.searchsorted(cats, col)
             idx_clipped = np.clip(idx, 0, n_cats - 1)
             match_mask = (cats[idx_clipped] == col)
@@ -496,6 +280,7 @@ class OneHotEncoder:
                         "Pass handle_unknown='ignore' to suppress."
                     )
 
+            # Set the matching column to 1 for each row in one vectorised step
             row_idx = np.arange(n_samples)[match_mask]
             block[row_idx, idx_clipped[match_mask]] = 1.0
             blocks.append(block)
@@ -503,26 +288,11 @@ class OneHotEncoder:
         return np.concatenate(blocks, axis=1)
 
     def fit_transform(self, X: ArrayLike, y=None) -> np.ndarray:
-        """Fit and transform in one step.
-
-        Parameters
-        ----------
-        X : array-like (n_samples, n_features)
-        y : ignored
-
-        Returns
-        -------
-        Xt : ndarray (n_samples, total_categories)
-        """
+        # Shortcut that runs fit() then transform() in one call.
         return self.fit(X).transform(X)
 
     def get_feature_names_out(self) -> list[str]:
-        """Return output column names e.g. ['x0_cat', 'x0_dog', 'x1_red'].
-
-        Returns
-        -------
-        names : list[str]
-        """
+        # Returns the output column names e.g. ['x0_cat', 'x0_dog', 'x1_red'].
         _check_is_fitted(self, "feature_names_out_")
         return self.feature_names_out_
 
